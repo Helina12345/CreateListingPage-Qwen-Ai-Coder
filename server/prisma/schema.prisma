@@ -1,0 +1,573 @@
+// ============================================================
+// ListingDesk Pro — Prisma Schema
+// Complete database schema for all models
+// ============================================================
+
+// This file defines the Prisma schema for the database
+// Run: npx prisma migrate dev --name init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// USER & AUTHENTICATION
+// ============================================================
+
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  passwordHash      String
+  name              String
+  role              String    @default("seller") // seller, admin
+  twoFactorEnabled  Boolean   @default(false)
+  twoFactorSecret   String?
+  avatar            String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  marketplaceConnections  MarketplaceConnection[]
+  supplierConnections     SupplierConnection[]
+  products                Product[]
+  orders                  Order[]
+  transactions            Transaction[]
+  balance                 Balance?
+  notifications           Notification[]
+  auditLogs               AuditLog[]
+}
+
+// ============================================================
+// MARKETPLACE CONNECTIONS
+// ============================================================
+
+model MarketplaceConnection {
+  id              String    @id @default(cuid())
+  userId          String
+  marketplaceId   String    // ebay, amazon, shopify, etsy, walmart, tiktok_shop, shopee, lazada, kohls
+  accessToken     String    @db.Text
+  refreshToken    String    @db.Text
+  tokenExpiry     DateTime
+  storeName       String?
+  storeId         String?
+  storeUrl        String?
+  status          String    @default("connected") // connected, disconnected, expired
+  scopes          String[]
+  lastSyncAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listings        Listing[]
+  orders          Order[]
+
+  @@unique([userId, marketplaceId])
+  @@index([userId])
+  @@index([marketplaceId])
+}
+
+// ============================================================
+// SUPPLIER CONNECTIONS
+// ============================================================
+
+model SupplierConnection {
+  id              String    @id @default(cuid())
+  userId          String
+  supplierId      String    // aliexpress
+  accessToken     String    @db.Text
+  refreshToken    String    @db.Text
+  tokenExpiry     DateTime?
+  status          String    @default("connected")
+  autoOrderEnabled    Boolean @default(false)
+  autoMessageEnabled  Boolean @default(false)
+  lastSyncAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  supplierOrders  SupplierOrder[]
+  messageTemplates MessageTemplate[]
+
+  @@unique([userId, supplierId])
+  @@index([userId])
+}
+
+// ============================================================
+// PRODUCT CATALOG (Central)
+// ============================================================
+
+model Product {
+  id              String    @id @default(cuid())
+  userId          String
+  title           String
+  description     String    @db.Text
+  shortDescription String?  @db.Text
+  sku             String
+  brand           String?
+  condition       String    @default("new") // new, used, refurbished
+  category        String?
+  subcategory     String?
+  tags            String[]
+  upc             String?
+  ean             String?
+  isbn            String?
+  status          String    @default("draft") // draft, active, paused, archived
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listings        Listing[]
+  variants        ProductVariant[]
+  images          ProductImage[]
+  inventory       Inventory?
+
+  @@index([userId])
+  @@index([sku])
+  @@index([status])
+  @@index([createdAt])
+  @@index([userId, status])
+  @@index([userId, createdAt])
+  @@index([brand])
+  @@index([category])
+}
+
+model ProductVariant {
+  id              String    @id @default(cuid())
+  productId       String
+  sku             String
+  title           String
+  attributes      Json      // { color: "Red", size: "Large" }
+  price           Decimal   @db.Decimal(10, 2)
+  salePrice       Decimal?  @db.Decimal(10, 2)
+  inventory       Int       @default(0)
+  images          String[]
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  product         Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@index([sku])
+}
+
+model ProductImage {
+  id              String    @id @default(cuid())
+  productId       String
+  url             String
+  alt             String?
+  isMain          Boolean   @default(false)
+  position        Int       @default(0)
+  variantId       String?
+  width           Int?
+  height          Int?
+  size            Int?
+  createdAt       DateTime  @default(now())
+
+  product         Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+}
+
+// ============================================================
+// MARKETPLACE LISTINGS
+// ============================================================
+
+model Listing {
+  id              String    @id @default(cuid())
+  productId       String
+  marketplaceId   String
+  connectionId    String
+  externalId      String?   // ID from marketplace
+  externalUrl     String?
+  title           String
+  description     String    @db.Text
+  sku             String
+  status          String    @default("pending") // pending, publishing, published, failed, paused
+  marketplaceData Json?     // Marketplace-specific fields
+  publishedAt     DateTime?
+  lastSyncAt      DateTime?
+  errors          Json?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  product         Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  connection      MarketplaceConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  orders          OrderItem[]
+
+  @@unique([productId, marketplaceId])
+  @@index([productId])
+  @@index([marketplaceId])
+  @@index([status])
+  @@index([externalId])
+}
+
+// ============================================================
+// ORDERS
+// ============================================================
+
+model Order {
+  id                String    @id @default(cuid())
+  userId            String
+  marketplaceId     String
+  connectionId      String
+  externalOrderId   String
+  status            String    @default("pending") // pending, confirmed, processing, ordered_from_supplier, shipped, delivered, cancelled, refunded
+  buyerName         String
+  buyerEmail        String
+  buyerPhone        String?
+  shippingAddress   Json
+  subtotal          Decimal   @db.Decimal(10, 2)
+  shippingCost      Decimal   @db.Decimal(10, 2)
+  tax               Decimal   @db.Decimal(10, 2)
+  total             Decimal   @db.Decimal(10, 2)
+  currency          String    @default("USD")
+  paymentMethod     String?
+  paymentStatus     String    @default("pending") // pending, captured, refunded
+  trackingNumber    String?
+  carrier           String?
+  supplierOrderId   String?
+  orderedAt         DateTime?
+  shippedAt         DateTime?
+  deliveredAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connection        MarketplaceConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  items             OrderItem[]
+  supplierOrder     SupplierOrder?
+
+  @@unique([marketplaceId, externalOrderId])
+  @@index([userId])
+  @@index([marketplaceId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([userId, createdAt])
+  @@index([marketplaceId, status])
+  @@index([userId, status])
+  @@index([supplierOrderId])
+  @@index([paymentStatus])
+}
+
+model OrderItem {
+  id              String    @id @default(cuid())
+  orderId         String
+  listingId       String
+  variantId       String?
+  title           String
+  sku             String
+  quantity        Int
+  price           Decimal   @db.Decimal(10, 2)
+  totalPrice      Decimal   @db.Decimal(10, 2)
+
+  order           Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  listing         Listing   @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([listingId])
+}
+
+// ============================================================
+// INVENTORY
+// ============================================================
+
+model Inventory {
+  id              String    @id @default(cuid())
+  productId       String
+  totalQuantity   Int       @default(0)
+  allocatedQuantity Int     @default(0)
+  availableQuantity Int     @default(0)
+  lowStockThreshold Int     @default(5)
+  reorderPoint    Int       @default(10)
+  lastUpdated     DateTime  @default(now())
+
+  product         Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  allocations     InventoryAllocation[]
+  history         InventoryHistory[]
+
+  @@unique([productId])
+  @@index([productId])
+}
+
+model InventoryAllocation {
+  id              String    @id @default(cuid())
+  inventoryId     String
+  marketplaceId   String
+  allocatedQuantity Int
+  updatedAt       DateTime  @default(now())
+
+  inventory       Inventory @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
+
+  @@unique([inventoryId, marketplaceId])
+  @@index([inventoryId])
+}
+
+model InventoryHistory {
+  id              String    @id @default(cuid())
+  inventoryId     String
+  previousQuantity Int
+  newQuantity     Int
+  change          Int
+  reason          String    // sale, restock, adjustment, sync, return, cancel
+  orderId         String?
+  userId          String?
+  notes           String?
+  createdAt       DateTime  @default(now())
+
+  inventory       Inventory @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
+
+  @@index([inventoryId])
+  @@index([createdAt])
+}
+
+// ============================================================
+// SUPPLIER ORDERS
+// ============================================================
+
+model SupplierOrder {
+  id                String    @id @default(cuid())
+  userId            String
+  connectionId      String
+  orderId           String?   // Related marketplace order
+  supplierId        String    @default("aliexpress")
+  externalOrderId   String?
+  productId         String
+  variantId         String?
+  quantity          Int
+  unitCost          Decimal   @db.Decimal(10, 2)
+  totalCost         Decimal   @db.Decimal(10, 2)
+  shippingCost      Decimal   @db.Decimal(10, 2)
+  status            String    @default("pending") // pending, placed, confirmed, shipped, delivered, cancelled
+  trackingNumber    String?
+  autoMessage       String?
+  orderedAt         DateTime?
+  shippedAt         DateTime?
+  deliveredAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  connection        SupplierConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  order             Order?    @relation(fields: [orderId], references: [id])
+
+  @@index([userId])
+  @@index([orderId])
+  @@index([status])
+}
+
+// ============================================================
+// MESSAGING
+// ============================================================
+
+model MessageTemplate {
+  id              String    @id @default(cuid())
+  userId          String
+  connectionId    String
+  name            String
+  subject         String?
+  body            String    @db.Text
+  language        String    @default("en")
+  isActive        Boolean   @default(true)
+  triggerEvent    String?   // order_placed, order_shipped, etc.
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  connection      SupplierConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  messages        Message[]
+
+  @@index([userId])
+  @@index([connectionId])
+}
+
+model Message {
+  id              String    @id @default(cuid())
+  userId          String
+  templateId      String?
+  supplierOrderId String?
+  direction       String    // outbound, inbound
+  subject         String?
+  body            String    @db.Text
+  status          String    @default("sent") // sent, delivered, failed
+  sentAt          DateTime  @default(now())
+
+  template        MessageTemplate? @relation(fields: [templateId], references: [id])
+
+  @@index([userId])
+  @@index([supplierOrderId])
+}
+
+// ============================================================
+// PAYMENTS & BALANCE
+// ============================================================
+
+model Balance {
+  id              String    @id @default(cuid())
+  userId          String    @unique
+  amount          Decimal   @db.Decimal(10, 2) @default(0)
+  currency        String    @default("USD")
+  lastUpdated     DateTime  @default(now())
+
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions    Transaction[]
+}
+
+model Transaction {
+  id              String    @id @default(cuid())
+  userId          String
+  type            String    // charge, refund, credit, debit
+  amount          Decimal   @db.Decimal(10, 2)
+  currency        String    @default("USD")
+  description     String
+  referenceId     String?   // Order ID, Supplier Order ID, etc.
+  stripePaymentId String?
+  status          String    @default("completed") // pending, completed, failed, refunded
+  createdAt       DateTime  @default(now())
+
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+// ============================================================
+// WEBHOOKS
+// ============================================================
+
+model WebhookEvent {
+  id              String    @id @default(cuid())
+  marketplaceId   String
+  eventType       String
+  externalId      String
+  payload         Json      @db.JsonB
+  processed       Boolean   @default(false)
+  processedAt     DateTime?
+  errors          Json?
+  createdAt       DateTime  @default(now())
+
+  @@index([marketplaceId])
+  @@index([eventType])
+  @@index([processed])
+  @@index([createdAt])
+}
+
+// ============================================================
+// BACKGROUND JOBS
+// ============================================================
+
+model Job {
+  id              String    @id @default(cuid())
+  type            String    // publish, sync_inventory, sync_orders, auto_order, etc.
+  status          String    @default("pending") // pending, processing, completed, failed
+  payload         Json      @db.JsonB
+  result          Json?     @db.JsonB
+  attempts        Int       @default(0)
+  maxAttempts     Int       @default(3)
+  scheduledAt     DateTime  @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@index([type])
+  @@index([status])
+  @@index([scheduledAt])
+}
+
+// ============================================================
+// AUDIT & LOGGING
+// ============================================================
+
+model AuditLog {
+  id              String    @id @default(cuid())
+  userId          String?
+  action          String
+  resource        String
+  resourceId      String?
+  changes         Json?     @db.JsonB
+  ipAddress       String?
+  userAgent       String?
+  createdAt       DateTime  @default(now())
+
+  user            User?     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([action])
+  @@index([resource])
+  @@index([createdAt])
+}
+
+model ErrorLog {
+  id              String    @id @default(cuid())
+  level           String    // error, warning, info
+  message         String    @db.Text
+  stack           String?   @db.Text
+  context         Json?     @db.JsonB
+  marketplaceId   String?
+  userId          String?
+  createdAt       DateTime  @default(now())
+
+  @@index([level])
+  @@index([marketplaceId])
+  @@index([createdAt])
+}
+
+// ============================================================
+// NOTIFICATIONS
+// ============================================================
+
+model Notification {
+  id              String    @id @default(cuid())
+  userId          String
+  type            String    // listing_published, order_received, inventory_low, etc.
+  title           String
+  message         String    @db.Text
+  read            Boolean   @default(false)
+  actionUrl       String?
+  metadata        Json?
+  createdAt       DateTime  @default(now())
+
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([read])
+  @@index([createdAt])
+}
+
+// ============================================================
+// RATE LIMITING
+// ============================================================
+
+model RateLimit {
+  id              String    @id @default(cuid())
+  marketplaceId   String
+  endpoint        String
+  requestCount    Int       @default(0)
+  windowStart     DateTime  @default(now())
+  windowEnd       DateTime
+
+  @@unique([marketplaceId, endpoint])
+  @@index([marketplaceId])
+  @@index([windowEnd])
+}
+
+// ============================================================
+// IDEMPOTENCY
+// ============================================================
+
+model IdempotencyKey {
+  id              String    @id @default(cuid())
+  key             String    @unique
+  userId          String
+  endpoint        String
+  response        Json?     @db.JsonB
+  status          String    @default("pending") // pending, completed, failed
+  createdAt       DateTime  @default(now())
+  expiresAt       DateTime
+
+  @@index([key])
+  @@index([userId])
+  @@index([expiresAt])
+}
